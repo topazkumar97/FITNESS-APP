@@ -7,15 +7,26 @@ const JWT_SECRET = process.env.JWT_SECRET!;
 export const signUpUser = async (email: string, password: string) => {
   const existingUser = await prisma.user.findUnique({ where: { email } });
   if (existingUser) {
-    return loginUser(email, password);
+    throw new Error("Email already registered. Please log in.");
   }
 
   const hashedPassword = await bcrypt.hash(password, 10);
+
   const user = await prisma.user.create({
     data: { email, password: hashedPassword },
+    omit: { password: true }, // strips password from the returned object
   });
 
-  return user;
+  // Create an empty profile for the new user so /user/me never returns 404s on new users
+  await prisma.profile.create({
+    data: { userId: user.id },
+  });
+
+  const token = jwt.sign({ userId: user.id, email: user.id }, JWT_SECRET, {
+    expiresIn: "15m", // WHY: Short-lived. We'll add refresh tokens next.
+  });
+
+  return { user, token };
 };
 
 export const loginUser = async (email: string, password: string) => {
@@ -29,6 +40,7 @@ export const loginUser = async (email: string, password: string) => {
     throw new Error("Invalid credentials");
   }
 
-  const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "1d" });
-  return token;
+  const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "15m" });
+
+  return { token };
 };
