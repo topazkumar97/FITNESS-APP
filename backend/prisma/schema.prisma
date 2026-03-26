@@ -1,8 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Get a free hosted Postgres database in seconds: `npx create-db`
-
 generator client {
   provider = "prisma-client-js"
   output   = "../src/generated/prisma"
@@ -12,23 +7,310 @@ datasource db {
   provider = "postgresql"
 }
 
+// ─── ENUMS ──────────────────────────────────────────────────────────────────
+// WHY enums: enforces valid values at the DB level, not just app level.
+// "goal" was TEXT before — that means "lose_weight", "LOSE WEIGHT", "loseWeight"
+// could all exist in your DB. Enums prevent that chaos.
+
+enum Goal {
+  LOSE_WEIGHT
+  BUILD_MUSCLE
+  IMPROVE_ENDURANCE
+  MAINTAIN
+  IMPROVE_FLEXIBILITY
+}
+
+enum FitnessLevel {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+}
+
+enum MuscleGroup {
+  CHEST
+  BACK
+  SHOULDERS
+  BICEPS
+  TRICEPS
+  FOREARMS
+  CORE
+  GLUTES
+  QUADS
+  HAMSTRINGS
+  CALVES
+  FULL_BODY
+  CARDIO
+}
+
+enum ExerciseCategory {
+  STRENGTH
+  CARDIO
+  FLEXIBILITY
+  BALANCE
+  PLYOMETRIC
+}
+
+enum Equipment {
+  BARBELL
+  DUMBBELL
+  CABLE
+  MACHINE
+  BODYWEIGHT
+  KETTLEBELL
+  RESISTANCE_BAND
+  OTHER
+}
+
+enum MealType {
+  BREAKFAST
+  LUNCH
+  DINNER
+  SNACK
+}
+
+// ─── AUTH ───────────────────────────────────────────────────────────────────
+
 model User {
-  id        String   @id @default(uuid())
+  id        String   @id @default(cuid())
   email     String   @unique
   password  String
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  profile   Profile?
+  profile        Profile?
+  refreshTokens  RefreshToken[]
+  workoutPlans   WorkoutPlan[]
+  workoutSessions WorkoutSession[]
+  nutritionLogs  NutritionLog[]
+  bodyStats      BodyStat[]
+  personalRecords PersonalRecord[]
+  customExercises Exercise[]       @relation("CustomExercises")
 }
 
+// WHY: Separate table from User so auth data (email/password) is isolated
+// from profile data. Cleaner separation of concerns.
 model Profile {
-  id       String @id @default(uuid())
-  userId   String @unique
-  name     String?
-  age      Int?
-  height   Float?
-  weight   Float?
-  goal     String?
+  id           String       @id @default(cuid())
+  userId       String       @unique
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name         String?
+  age          Int?
+  heightCm     Float?
+  weightKg     Float?
+  goal         Goal?
+  fitnessLevel FitnessLevel?
+  avatarUrl    String?
+  updatedAt    DateTime     @updatedAt
+}
 
-  user     User @relation(fields: [userId], references: [id])
+// WHY: Stored in DB so we can revoke tokens server-side.
+// JWT alone is stateless — once issued, you can't invalidate it.
+// This table lets us do "log out all devices" or detect token theft.
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ─── EXERCISES ──────────────────────────────────────────────────────────────
+
+model Exercise {
+  id           String           @id @default(cuid())
+  name         String
+  muscleGroup  MuscleGroup
+  category     ExerciseCategory
+  equipment    Equipment        @default(BODYWEIGHT)
+  instructions String?
+  videoUrl     String?
+  // WHY: isCustom + createdBy lets us seed a global library AND
+  // let users create their own exercises — same table, one flag.
+  isCustom     Boolean          @default(false)
+  createdBy    String?
+  creator      User?            @relation("CustomExercises", fields: [createdBy], references: [id])
+  createdAt    DateTime         @default(now())
+
+  planExercises   WorkoutPlanExercise[]
+  sessionExercises SessionExercise[]
+  personalRecords  PersonalRecord[]
+
+  @@index([muscleGroup])
+  @@index([category])
+}
+
+// ─── WORKOUT PLANS (templates) ──────────────────────────────────────────────
+
+// WHY: A Plan is a TEMPLATE — "Push Day A with bench, OHP, flyes".
+// A Session is an INSTANCE — "I did Push Day A today with these actual weights".
+// Separating them lets users reuse plans across multiple sessions.
+model WorkoutPlan {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  exercises WorkoutPlanExercise[]
+  sessions  WorkoutSession[]
+
+  @@index([userId])
+}
+
+// Junction table: which exercises are in a plan, and in what order
+model WorkoutPlanExercise {
+  id            String  @id @default(cuid())
+  planId        String
+  plan          WorkoutPlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+  exerciseId    String
+  exercise      Exercise    @relation(fields: [exerciseId], references: [id])
+  orderIndex    Int
+  targetSets    Int?
+  targetReps    Int?
+  targetWeightKg Float?
+
+  @@index([planId])
+  @@unique([planId, orderIndex]) // WHY: prevents two exercises at same position
+}
+
+// ─── WORKOUT SESSIONS (actual logged workouts) ───────────────────────────────
+
+model WorkoutSession {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // WHY nullable: users can do ad-hoc sessions without a plan
+  planId      String?
+  plan        WorkoutPlan? @relation(fields: [planId], references: [id])
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+  durationMin Int?
+  notes       String?
+
+  exercises SessionExercise[]
+
+  @@index([userId])
+  @@index([startedAt])
+}
+
+// Each exercise performed within a session
+model SessionExercise {
+  id         String         @id @default(cuid())
+  sessionId  String
+  session    WorkoutSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  exerciseId String
+  exercise   Exercise       @relation(fields: [exerciseId], references: [id])
+  orderIndex Int
+  notes      String?
+
+  sets ExerciseSet[]
+
+  @@index([sessionId])
+}
+
+// Each individual set within a session exercise
+model ExerciseSet {
+  id                String          @id @default(cuid())
+  sessionExerciseId String
+  sessionExercise   SessionExercise @relation(fields: [sessionExerciseId], references: [id], onDelete: Cascade)
+  setNumber         Int
+  reps              Int?
+  weightKg          Float?
+  durationSeconds   Int?            // WHY: for timed exercises like planks
+  restSeconds       Int?
+  isWarmup          Boolean         @default(false)
+  completedAt       DateTime        @default(now())
+
+  @@index([sessionExerciseId])
+}
+
+// ─── PERSONAL RECORDS ───────────────────────────────────────────────────────
+
+// WHY: Auto-tracked. Every time a set is logged we check if it's a PR.
+// Querying all sets to find PRs would be slow at scale — dedicated table is correct.
+model PersonalRecord {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  exerciseId String
+  exercise   Exercise @relation(fields: [exerciseId], references: [id])
+  weightKg   Float
+  reps       Int
+  achievedAt DateTime @default(now())
+
+  @@unique([userId, exerciseId]) // WHY: one PR record per user per exercise — we UPDATE it, not insert new rows
+  @@index([userId])
+}
+
+// ─── NUTRITION ──────────────────────────────────────────────────────────────
+
+// One log per user per day
+model NutritionLog {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  logDate        DateTime @db.Date // WHY: Date only, no time component
+  targetCalories Int?
+
+  items NutritionLogItem[]
+
+  @@unique([userId, logDate]) // WHY: one log per user per day, enforced at DB level
+  @@index([userId])
+}
+
+// Each food entry within a daily log
+model NutritionLogItem {
+  id         String       @id @default(cuid())
+  logId      String
+  log        NutritionLog @relation(fields: [logId], references: [id], onDelete: Cascade)
+  foodItemId String
+  foodItem   FoodItem     @relation(fields: [foodItemId], references: [id])
+  mealType   MealType
+  quantity   Float        // in servingUnit of the food item
+  loggedAt   DateTime     @default(now())
+
+  @@index([logId])
+}
+
+// Cached food data from Open Food Facts API
+// WHY cached: don't hit external API on every request. Store once, reuse forever.
+model FoodItem {
+  id          String @id @default(cuid())
+  // WHY: externalId lets us track the Open Food Facts barcode/id
+  externalId  String? @unique
+  name        String
+  brand       String?
+  calories    Float  // per serving
+  proteinG    Float
+  carbsG      Float
+  fatG        Float
+  fiberG      Float?
+  servingSize Float
+  servingUnit String @default("g")
+
+  logItems NutritionLogItem[]
+
+  @@index([name])
+}
+
+// ─── BODY STATS ─────────────────────────────────────────────────────────────
+
+// WHY separate from Profile: Profile has current stats, BodyStat is the
+// historical time series. You need both to draw a progress chart.
+model BodyStat {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  weightKg     Float?
+  bodyFatPct   Float?
+  muscleMassKg Float?
+  recordedAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([recordedAt])
 }
