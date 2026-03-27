@@ -140,6 +140,7 @@ model Exercise {
 
   @@index([muscleGroup])
   @@index([category])
+  @@unique([name])
 }
 
 // ─── WORKOUT PLANS (templates) ──────────────────────────────────────────────
