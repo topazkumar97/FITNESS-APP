@@ -1,24 +1,28 @@
-import jwt from "jsonwebtoken";
+// src/middleware/auth.middleware.ts
 import { Context } from "hono";
-
-const JWT_SECRET = process.env.JWT_SECRET!;
+import { verifyAccessToken } from "../utils/token";
 
 export const authMiddleware = async (c: Context, next: () => Promise<void>) => {
   const authHeader = c.req.header("Authorization");
-  if (!authHeader) {
-    return c.text("Unauthorized", 401);
-  }
+  if (!authHeader) return c.json({ error: "Unauthorized" }, 401);
 
   const token = authHeader.split(" ")[1];
-  if (!token) {
-    return c.text("Unauthorized", 401);
-  }
+  if (!token) return c.json({ error: "Unauthorized" }, 401);
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = verifyAccessToken(token);
     c.set("user", decoded);
     await next();
   } catch (error) {
-    return c.text("Unauthorized", 401);
+    // WHY: distinguish between expired and invalid tokens.
+    // Expired = client should try refresh. Invalid = force login.
+    const isExpired = error instanceof Error && error.message === "jwt expired";
+    return c.json(
+      {
+        error: isExpired ? "Token expired" : "Unauthorized",
+        code: isExpired ? "TOKEN_EXPIRED" : "UNAUTHORIZED",
+      },
+      401,
+    );
   }
 };

@@ -1,8 +1,12 @@
+// src/modules/auth/auth.service.ts
 import { prisma } from "../../utils/prisma";
 import bcrypt from "bcrypt";
-import jwt from "jsonwebtoken";
-
-const JWT_SECRET = process.env.JWT_SECRET!;
+import {
+  generateAccessToken,
+  generateRefreshToken,
+  rotateRefreshToken,
+  revokeAllRefreshTokens,
+} from "../../utils/token";
 
 export const signUpUser = async (email: string, password: string) => {
   const existingUser = await prisma.user.findUnique({ where: { email } });
@@ -14,33 +18,39 @@ export const signUpUser = async (email: string, password: string) => {
 
   const user = await prisma.user.create({
     data: { email, password: hashedPassword },
-    omit: { password: true }, // strips password from the returned object
+    omit: { password: true },
   });
 
-  // Create an empty profile for the new user so /user/me never returns 404s on new users
-  await prisma.profile.create({
-    data: { userId: user.id },
-  });
+  await prisma.profile.create({ data: { userId: user.id } });
 
-  const token = jwt.sign({ userId: user.id, email: user.id }, JWT_SECRET, {
-    expiresIn: "15m", // WHY: Short-lived. We'll add refresh tokens next.
-  });
+  // WHY: return both tokens on signup so the app is immediately
+  // authenticated — user shouldn't have to log in after signing up.
+  const accessToken = generateAccessToken(user.id, user.email);
+  const refreshToken = await generateRefreshToken(user.id);
 
-  return { user, token };
+  return { user, accessToken, refreshToken };
 };
 
 export const loginUser = async (email: string, password: string) => {
   const user = await prisma.user.findUnique({ where: { email } });
-  if (!user) {
-    throw new Error("Invalid credentials");
-  }
+  if (!user) throw new Error("Invalid credentials");
 
   const isPasswordValid = await bcrypt.compare(password, user.password);
-  if (!isPasswordValid) {
-    throw new Error("Invalid credentials");
-  }
+  if (!isPasswordValid) throw new Error("Invalid credentials");
 
-  const token = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: "15m" });
+  const accessToken = generateAccessToken(user.id, user.email);
+  const refreshToken = await generateRefreshToken(user.id);
 
-  return { token };
+  return { accessToken, refreshToken };
+};
+
+export const refreshUserToken = async (refreshToken: string) => {
+  const result = await rotateRefreshToken(refreshToken);
+  if (!result) throw new Error("Invalid or expired refresh token");
+  return result;
+};
+
+export const logoutUser = async (userId: string) => {
+  // Wipes all refresh tokens — logs out from every device
+  await revokeAllRefreshTokens(userId);
 };

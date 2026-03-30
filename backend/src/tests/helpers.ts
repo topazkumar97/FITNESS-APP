@@ -36,13 +36,14 @@ const server = createServer(async (req, res) => {
 
 export const api = request(server);
 
+// src/tests/helpers.ts — only change the loginAsTestUser function
 export const loginAsTestUser = async (
   email: string,
-  password = "TestPassword123",
+  password = "TestPassword123"
 ) => {
   await api.post("/auth/signup").send({ email, password });
   const res = await api.post("/auth/login").send({ email, password });
-  return res.body.token as string;
+  return res.body.accessToken as string; // ← was token, now accessToken
 };
 
 export const cleanupTestUser = async (email: string) => {
